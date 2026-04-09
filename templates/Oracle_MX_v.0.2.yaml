@@ -1,0 +1,1333 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 748ad4d098d447d492bb935c907f652f
+      name: Templates/Databases
+  templates:
+    - uuid: edd1c155f008473ebe049cefafe6b809
+      template: 'Oracle MX v.0.2'
+      name: 'Oracle MX v.0.2'
+      description: |
+        1. Create an Oracle user for monitoring.
+        
+        2. Set the user name and password in host macros ({$ORACLE.USER} and {$ORACLE.PASSWORD}).
+          Do not forget to install the Microsoft ODBC driver on the Zabbix server or the Zabbix proxy.
+          See Oracle documentation for instructions: https://www.oracle.com/database/technologies/releasenote-odbc-ic.html.
+        
+          Note! Credentials in the odbc.ini do not work for Oracle.
+          Note! Be sure that ODBC connects to Oracle with session parameter NLS_NUMERIC_CHARACTERS= '.,' It is important for correct display float numbers in Zabbix.
+        The "Service's TCP port state" item uses {$ORACLE.HOST} and {$ORACLE.PORT} macros to check the availability of the listener.
+        
+        
+        Template tooling version used: 0.40
+      groups:
+        - name: Templates/Databases
+      items:
+        - uuid: 758aeb7e4e78401a830cf3768a88c87d
+          name: 'Oracle: Get alertlog messages'
+          type: ODBC
+          key: 'db.odbc.get[get_alertlog_messages,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 1h
+          history: 30d
+          value_type: TEXT
+          trends: '0'
+          params: 'select originating_timestamp dt, message_text msg from V$DIAG_ALERT_EXT where originating_timestamp>sysdate-1/24 and (message_level=1 or message_type in (2,3));'
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          description: 'The item gets the system metric values.'
+          tags:
+            - tag: Application
+              value: 'Zabbix raw items'
+        - uuid: 901755f25fee4b72b7d7c3ca81cd523a
+          name: 'Oracle: Get alertlog metrics'
+          type: ODBC
+          key: 'db.odbc.get[get_alertlog_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 2m;m0-59
+          history: '0'
+          value_type: TEXT
+          trends: '0'
+          params: 'select ''ALERTLOG_ERROR_COUNT'' metric,count(*) value from V$DIAG_ALERT_EXT where originating_timestamp>sysdate-1 and (message_level=1 or message_type in (2,3));'
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          description: 'The item gets the alertlog metric values.'
+          tags:
+            - tag: Application
+              value: 'Zabbix raw items'
+        - uuid: f076b2202d7d4f3ab3ed5c6ff9163d01
+          name: 'Oracle: Get archive dest info'
+          type: ODBC
+          key: 'db.odbc.get[get_archivelog_stat,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 2m
+          history: '0'
+          value_type: TEXT
+          trends: '0'
+          params: |
+            with current_seq as (select max(log_sequence) seq from v$archive_dest where status='VALID' and target='PRIMARY')
+            SELECT
+            d.dest_name, DECODE (d.status, 'VALID',3, 'DEFERRED', 2, 'ERROR', 1, 0) AS status,
+            d.log_sequence,
+            d.error,
+            cs.seq-d.log_sequence transfer_lag
+            FROM v$archive_dest d , v$database db, current_seq cs
+            WHERE d.status != 'INACTIVE' AND db.log_mode = 'ARCHIVELOG';
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          tags:
+            - tag: Application
+              value: 'Zabbix raw items'
+        - uuid: 8b6e5dce7fe347eab7f2bfe9f4b9afaf
+          name: 'Oracle: Get ASM stats'
+          type: ODBC
+          key: 'db.odbc.get[get_asm_stat,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 2m
+          history: '0'
+          value_type: TEXT
+          trends: '0'
+          params: |
+            SELECT
+            name AS dg_name,
+            trunc(total_mb/DECODE(TYPE, 'NORMAL', 2, 'HIGH', 3, 'EXTERN', 1)*1024*1024) AS size_byte,
+            trunc(usable_file_mb*1024*1024 ) AS free_size_byte,
+            trunc(total_mb/DECODE(TYPE, 'NORMAL', 2, 'HIGH', 3, 'EXTERN', 1)*1024*1024)-trunc(usable_file_mb*1024*1024 ) used_byte
+            FROM v$asm_diskgroup;
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          description: 'Get ASM disk groups stats.'
+          tags:
+            - tag: Application
+              value: 'Zabbix raw items'
+        - uuid: 3e461d8fce294dc8a8e89eeadb4ccb5d
+          name: 'Oracle: Get backup metrics'
+          type: ODBC
+          key: 'db.odbc.get[get_backup_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 2m
+          history: '0'
+          value_type: TEXT
+          trends: '0'
+          params: |
+            select 'BACKUP::'||btp.TYPE_NAME name, nvl(bkp.value,0) value from 
+            (SELECT type, greatest((sysdate-max(completion_time))*24*60*60,0) value
+            FROM
+            (
+            SELECT
+            CASE
+              WHEN s.backup_type='L' THEN 'ARCHIVELOG'
+              WHEN s.controlfile_included in ('YES') THEN 'CONTROLFILE'
+              WHEN s.controlfile_included in ('SBY') THEN 'CONTROLFILE_STB'
+              WHEN s.backup_type in ('I','D') AND s.incremental_level=0 THEN 'LEVEL0'
+              WHEN s.backup_type='I' AND s.incremental_level=1 THEN 'LEVEL1'
+              WHEN s.backup_type='D' AND s.incremental_level is null and s.controlfile_included not in ('YES','SBY') THEN 'FULL'
+            END type,
+            s.completion_time
+            FROM v$backup_piece p, v$backup_set s
+            WHERE p.status='A' AND s.set_stamp = p.set_stamp
+               and s.set_count  = p.set_count
+            )
+            GROUP BY type) bkp, (select decode(level,1,'ARCHIVELOG',2,'CONTROLFILE', 3,'CONTROLFILE_STB',4,'LEVEL0',5,'LEVEL1',6,'FULL') type_name from dual connect by level<=6) btp
+            where bkp.type(+)=btp.type_name
+            UNION ALL
+            select 'BACKUP::NOT_BAKED_UP_COUNT',count(*) count from v$dbfile where file# not in (select file# from v$backup_datafile bd, v$backup_piece p  where (bd.incremental_level=0 or bd.incremental_level is null) and bd.set_stamp = p.set_stamp  and bd.set_count = p.set_count and p.status='A');
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          description: 'The item gets the backups info.'
+          tags:
+            - tag: Application
+              value: 'Zabbix raw items'
+        - uuid: 9f6106df90534003aaf1655acfaf4527
+          name: 'Oracle: Get Standby metrics'
+          type: ODBC
+          key: 'db.odbc.get[get_standby_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 0;m0-59
+          history: '0'
+          value_type: TEXT
+          trends: '0'
+          params: |
+            select 'STANDBY::MRP0 status' metric, status value from v$managed_standby s where process='MRP0'
+            union all
+            SELECT 'STANDBY::'||name, to_char((EXTRACT(DAY FROM to_dsinterval(ds.VALUE)) * 86400) +
+            (EXTRACT(HOUR FROM to_dsinterval(VALUE)) * 3600) +
+            (EXTRACT(MINUTE FROM to_dsinterval(VALUE)) * 60) +
+            EXTRACT(SECOND FROM to_dsinterval(VALUE)))  value FROM V$DATAGUARD_STATS ds WHERE NAME in ('apply lag','transport lag')
+            union all
+            select s.name, to_char(s.value) from (select 'STANDBY::MRP0 started' name, count(*) value from v$managed_standby where process='MRP0') s, v$database d where d.DATABASE_ROLE='PHYSICAL STANDBY';
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          description: |
+            All metrics relevant just for Physical Standby.
+            Turn off them on the Primary.
+          tags:
+            - tag: Application
+              value: 'Zabbix raw items'
+        - uuid: b42f86b809ff46c382e1c016c74ea1c4
+          name: 'Oracle: Get Standby Transfer Lag'
+          type: ODBC
+          key: 'db.odbc.get[get_standby_transfer_lag_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 10m;m0-59
+          history: '0'
+          value_type: TEXT
+          trends: '0'
+          params: |
+            select 'lag_seq' metric, nvl((select max(log_sequence) from v$archive_dest where status='VALID' and target='PRIMARY')-
+            (select min(log_sequence) from v$archive_dest where status='VALID' and target='STANDBY'),0) value
+            from dual;
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          description: 'The item gets the standby transfer lag metric values.'
+          tags:
+            - tag: Application
+              value: 'Zabbix raw items'
+        - uuid: d85f0043c52147abacef7a12712facb2
+          name: 'Oracle: Get system metrics'
+          type: ODBC
+          key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 0;m0-59
+          history: '0'
+          value_type: TEXT
+          trends: '0'
+          params: |
+            SELECT 'SYSPARAM::' || name METRIC, to_number(VALUE) VALUE
+              FROM V$SYSTEM_PARAMETER WHERE NAME IN ('sessions', 'processes', 'db_files')
+            union all
+             SELECT 'SESSION::Locked now' ,count(*) FROM V$SESSION s WHERE s.BLOCKING_SESSION IS NOT NULL AND s.BLOCKING_SESSION_STATUS='VALID' AND s.SECONDS_IN_WAIT > 0
+            union all
+             SELECT 'SESSION::Long time locked' ,count(*) FROM V$SESSION s WHERE s.BLOCKING_SESSION IS NOT NULL AND s.BLOCKING_SESSION_STATUS='VALID' AND s.SECONDS_IN_WAIT > {$ORACLE.SESSION.LOCK.MAX.TIME}
+            union all
+             SELECT 'SESSION::Total', COUNT(*) FROM V$SESSION
+            union all
+             SELECT 'SESSION::Active Foreground', COUNT(*) FROM V$SESSION where status='ACTIVE' and username is not null
+            union all
+             SELECT 'FRA::Space Limit', space_limit FROM V$RECOVERY_FILE_DEST
+            union all
+             SELECT 'FRA::Space Used', space_used FROM V$RECOVERY_FILE_DEST
+            union all
+             SELECT 'FRA::Space Reclaimable', space_reclaimable FROM V$RECOVERY_FILE_DEST
+            union all
+             SELECT 'FRA::Number Of Files', number_of_files FROM V$RECOVERY_FILE_DEST
+            union all
+             SELECT 'FRA::Space Free', DECODE(space_limit, 0, 0,space_limit-(space_used-space_reclaimable)) FROM V$RECOVERY_FILE_DEST
+            union all
+             SELECT 'PROC::Procnum', COUNT(*) FROM v$process
+            union all
+             SELECT 'DATABASE::Datafiles Count', COUNT(*) FROM v$datafile
+            union all
+             SELECT 'REDO::Available', count(*) from v$log t where t.status in ('INACTIVE', 'UNUSED')
+            union all
+             SELECT 'USER::Expire password', ROUND(DECODE(SIGN(NVL(u.expiry_date, SYSDATE + 999) - SYSDATE),-1, 0, NVL(u.expiry_date, SYSDATE + 999) - SYSDATE)) exp_passwd_days_before
+            FROM dba_users u WHERE username = UPPER('{$ORACLE.USER}')
+            union all
+             select 'DATABASE::Size', sum(bytes) from v$datafile
+            union all
+            select 'INSTANCE::Startup time', (startup_time-to_date('01011970', 'ddmmyyyy'))*24*60*60 from v$instance;
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          description: 'The item gets the system metric values.'
+          tags:
+            - tag: Application
+              value: 'Zabbix raw items'
+        - uuid: a169362432764f1e864ffe86d38a53f9
+          name: 'Oracle: Get tablespaces stats'
+          type: ODBC
+          key: 'db.odbc.get[get_tablespaces_stats,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 10m
+          history: '0'
+          value_type: TEXT
+          trends: '0'
+          params: |
+            select dta.tablespace_name tablespace,dta.contents, DECODE(dta.status, 'ONLINE', 1, 'OFFLINE', 2, 'READ ONLY', 3, 0) STATUS,a.file_bytes,a.max_bytes,a.free free_bytes,a.used_bytes,a.used_max_pct*100 used_max_pct from (
+            select ts.tablespace_name tablespace_name, ts.file_bytes, ts.max_bytes, ts.max_bytes-nvl((u.blocks_used*ts.block_size),0) free,
+            nvl(u.blocks_used*ts.block_size,0) used_bytes,
+            round(nvl(u.blocks_used,0)*ts.block_size/ts.max_bytes,2) used_max_pct
+            from 
+            (select tablespace, sum(blocks) blocks_used from v$tempseg_usage group by tablespace) u,
+            (select t.tablespace_name, t.block_size, sum(f.bytes) file_bytes, sum(decode(f.autoextensible,'YES',f.maxbytes,f.bytes)) max_bytes from
+            dba_tablespaces t,dba_temp_files f where t.tablespace_name=f.tablespace_name
+            group by t.tablespace_name, t.block_size) ts
+            where u.tablespace(+)=ts.tablespace_name
+            union all
+            select ts.tablespace_name tablespace, ts.file_bytes, ts.max_bytes, ts.max_bytes-u.used_bytes free,
+            u.used_bytes,
+            round(u.used_bytes/ts.max_bytes,2) used_max_pct
+            from 
+            (SELECT ue.tablespace_name, SUM(ue.bytes * decode(ue.status, 'ACTIVE', 1, decode(ts.RETENTION, 'GUARANTEE', 1, 0))) AS used_bytes FROM dba_undo_extents ue, dba_tablespaces ts WHERE ue.status in ('ACTIVE', 'UNEXPIRED') AND ts.TABLESPACE_NAME = ue.TABLESPACE_NAME GROUP BY ue.tablespace_name) u,
+            (select t.tablespace_name, sum(f.bytes) file_bytes, sum(decode(f.autoextensible,'YES',f.maxbytes,f.bytes)) max_bytes from
+            dba_tablespaces t,dba_data_files f where t.tablespace_name=f.tablespace_name and contents='UNDO'
+            group by t.tablespace_name) ts
+            where u.tablespace_name=ts.tablespace_name
+            union all
+            select df.tablespace_name, sum(df.bytes) file_bytes, sum(df.max_bytes) max_bytes,
+            sum(df.max_bytes)-(sum(df.bytes)-sum(nvl(f.free,0))) free,
+            sum(df.bytes)-sum(nvl(f.free,0)) used_bytes,
+            round((sum(df.bytes)-sum(nvl(f.free,0)))/sum(df.max_bytes),2) used_max_pct
+            FROM (SELECT
+               ddf.file_id,
+               ddf.tablespace_name,
+               ddf.bytes AS bytes,
+               decode(ddf.autoextensible,'YES',ddf.maxbytes,ddf.bytes) AS max_bytes
+               FROM
+                dba_data_files ddf,
+                dba_tablespaces dt
+              WHERE
+               ddf.tablespace_name = dt.tablespace_name and dt.contents='PERMANENT') df,
+               (SELECT SUM(bytes) AS FREE, file_id FROM dba_free_space GROUP BY file_id) f
+               WHERE df.file_id = f.file_id (+)
+               GROUP BY df.tablespace_name) a, dba_tablespaces dta where a.tablespace_name=dta.tablespace_name;
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          description: 'Get tablespaces stats.'
+          tags:
+            - tag: Application
+              value: 'Zabbix raw items'
+        - uuid: 0802aa4e447f41a9bffd3ad2087c5d95
+          name: 'Item in Not supported state'
+          type: TRAP
+          key: item_not_supported
+          delay: '0'
+          history: 2d
+          value_type: TEXT
+          trends: '0'
+          description: |
+            Zabbix Item in Not supported state.
+            Go Configuration -> Hosts, select an appropriate Host and check its Items.
+          triggers:
+            - uuid: 48838ee4745e438c9ea56ae0caceb58b
+              expression: 'right(last(/Oracle MX v.0.2/item_not_supported),2)<>"OK"'
+              recovery_mode: RECOVERY_EXPRESSION
+              recovery_expression: 'right(last(/Oracle MX v.0.2/item_not_supported),2)="OK"'
+              name: 'Some Items in the "Not supported" state. Check the Items.'
+              status: DISABLED
+              priority: HIGH
+              manual_close: 'YES'
+        - uuid: ba5411b33e4e4284a35b069069ab1f19
+          name: 'Oracle: Alertlog Error Count'
+          type: DEPENDENT
+          key: oracle.ALERTLOG_ERROR_COUNT
+          delay: '0'
+          history: 7d
+          description: 'Alertlog Error Count.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''ALERTLOG_ERROR_COUNT'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_alertlog_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+        - uuid: 24108df79e1f466eb4a3e42181dbc09c
+          name: 'Oracle: BKP, Archivelog backup'
+          type: DEPENDENT
+          key: oracle.alog_backup
+          delay: '0'
+          history: 7d
+          units: s
+          description: 'Archivelogs have been backed up this time ago.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.NAME==''BACKUP::ARCHIVELOG'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_backup_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          triggers:
+            - uuid: efb75d35ed85447593a41d3007503129
+              expression: 'last(/Oracle MX v.0.2/oracle.alog_backup)>{$ORACLE_ALOG_BACKUP_CRIT}'
+              name: 'No archived logs backups'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE_ALOG_BACKUP_CRIT}'
+              priority: HIGH
+              description: 'Archivelogs have not been backed up for a long time. Check out backup logs.'
+            - uuid: 567d2a6f740c4c6d947eac0a8a9109ef
+              expression: 'last(/Oracle MX v.0.2/oracle.alog_backup)>{$ORACLE_ALOG_BACKUP_WARN}'
+              name: 'No archived logs backups'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE_ALOG_BACKUP_WARN}'
+              priority: WARNING
+              description: 'Archivelogs have not been backed up for a long time. Check out backup system logs.'
+              dependencies:
+                - name: 'No archived logs backups'
+                  expression: 'last(/Oracle MX v.0.2/oracle.alog_backup)>{$ORACLE_ALOG_BACKUP_CRIT}'
+        - uuid: 9e616e20af3f41dd8c2667ef052aea0a
+          name: 'Oracle: BKP, Controlfile backup'
+          type: DEPENDENT
+          key: oracle.cf_backup
+          delay: '0'
+          history: 7d
+          units: s
+          description: 'Controlfile has been backed up this time ago.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.NAME==''BACKUP::CONTROLFILE'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_backup_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          triggers:
+            - uuid: df48b793895a4f8188c8752a33a7677a
+              expression: 'last(/Oracle MX v.0.2/oracle.cf_backup)>{$ORACLE_CF_BACKUP_CRIT}'
+              name: 'No controlfile backups'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE_CF_BACKUP_CRIT}'
+              priority: HIGH
+              description: 'Controlfile has not been backed up for a long time. Check out backup logs.'
+            - uuid: a7d7ce76379641b69953cd2f2d3bca44
+              expression: 'last(/Oracle MX v.0.2/oracle.cf_backup)>{$ORACLE_CF_BACKUP_WARN}'
+              name: 'No controlfile backups'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE_CF_BACKUP_WARN}'
+              priority: WARNING
+              description: 'Controlfile has not been backed up for a long time. Check out backup logs.'
+              dependencies:
+                - name: 'No controlfile backups'
+                  expression: 'last(/Oracle MX v.0.2/oracle.cf_backup)>{$ORACLE_CF_BACKUP_CRIT}'
+        - uuid: 04c67c341f3d42e8aefcb3969a0dca6e
+          name: 'Oracle: DATABASE, Datafiles Count'
+          type: DEPENDENT
+          key: oracle.dbfiles_count
+          delay: '0'
+          history: 7d
+          description: 'Datafiles count.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''DATABASE::Datafiles Count'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+        - uuid: d6a8fbb8f4014ac6b06042e7004ecc48
+          name: 'Oracle: PARAM, DBFiles limit'
+          type: DEPENDENT
+          key: oracle.dbfiles_limit
+          delay: '0'
+          history: 7d
+          description: 'Max opened datafiles.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''SYSPARAM::db_files'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+        - uuid: 2e628dbe6572439a83c2a44e827a751b
+          name: 'Oracle: DATABASE, Size'
+          type: DEPENDENT
+          key: oracle.db_size
+          delay: '0'
+          history: 7d
+          units: B
+          description: 'Database size.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''DATABASE::Size'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+        - uuid: ddd4f65b30144f4ab0eb2475c10f882b
+          name: 'Oracle: FRA, Free space'
+          type: DEPENDENT
+          key: oracle.fra_space_free
+          delay: '0'
+          history: 7d
+          units: B
+          description: 'Free space in FRA.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''FRA::Space Free'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+        - uuid: a5d728fd2c9a45a5a35e6d76927ee55f
+          name: 'Oracle: FRA, Space limit'
+          type: DEPENDENT
+          key: oracle.fra_space_limit
+          delay: '0'
+          history: 7d
+          units: B
+          description: 'Maximum amount of disk space (in bytes) that the database can use for the fast recovery area.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''FRA::Space Limit'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+        - uuid: 2dcf430c92774d4eb3643798eae7e2a0
+          name: 'Oracle: FRA, Used space'
+          type: DEPENDENT
+          key: oracle.fra_space_used
+          delay: '0'
+          history: 7d
+          units: B
+          description: 'Amount of disk space (in bytes) used by fast recovery area files created in current and all previous fast recovery areas.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''FRA::Space Used'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+        - uuid: 914c69ec6f7f451c80fe7d671e7835f9
+          name: 'Oracle: STB, Transfer Lag'
+          type: DEPENDENT
+          key: oracle.lag_seq
+          delay: '0'
+          history: 7d
+          value_type: FLOAT
+          description: |
+            Standby Transfer Lag (log count).
+            For primary.
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''lag_seq'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_standby_transfer_lag_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+          triggers:
+            - uuid: f0dec106a55046529de41a39c312cc00
+              expression: 'last(/Oracle MX v.0.2/oracle.lag_seq)>{$ORACLE_STANDBY_TRANSFER_LAG}'
+              name: 'Standby Transfer Lag Exists'
+              opdata: 'last: {ITEM.LASTVALUE1}'
+              priority: HIGH
+              description: |
+                Standby transfer lag exists. Please, check DataGuard.
+                (Only for Primary)
+        - uuid: 623a9d9a5d294cd087149a33f197d67a
+          name: 'Oracle: BKP, Level 0 backup'
+          type: DEPENDENT
+          key: oracle.level0_backup
+          delay: '0'
+          history: 7d
+          units: s
+          description: 'Level 0 backup has been done this time ago.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.NAME==''BACKUP::LEVEL0'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_backup_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          triggers:
+            - uuid: f59d115b8c11429c8bbbfb69650a00cc
+              expression: 'last(/Oracle MX v.0.2/oracle.level0_backup)>{$ORACLE_L0_BACKUP_CRIT}'
+              name: 'No level 0 backups'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE_L0_BACKUP_CRIT}'
+              priority: HIGH
+              description: 'Database has not been backed up for a long time. Check out backup logs.'
+            - uuid: bbfdd8dc437849cbb9d2ba6f6419d769
+              expression: 'last(/Oracle MX v.0.2/oracle.level0_backup)>{$ORACLE_L0_BACKUP_WARN}'
+              name: 'No level 0 backups'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE_L0_BACKUP_WARN}'
+              priority: WARNING
+              description: 'Database has not been backed up for a long time. Check out backup logs.'
+              dependencies:
+                - name: 'No level 0 backups'
+                  expression: 'last(/Oracle MX v.0.2/oracle.level0_backup)>{$ORACLE_L0_BACKUP_CRIT}'
+        - uuid: d8945b93a6314f7d80f5c52ccc96d990
+          name: 'Oracle: BKP, Level 1 backup'
+          type: DEPENDENT
+          key: oracle.level1_backup
+          delay: '0'
+          history: 7d
+          units: s
+          description: 'Level 1 backup has been done this time ago.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.NAME==''BACKUP::LEVEL1'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_backup_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          triggers:
+            - uuid: 7beabf7e67274299b367d8108e2c6d81
+              expression: 'last(/Oracle MX v.0.2/oracle.level1_backup)>{$ORACLE_L1_BACKUP_CRIT}'
+              name: 'No level 1 backups'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE_L1_BACKUP_CRIT}'
+              priority: HIGH
+              description: 'Database has not been backed up for a long time. Check out backup logs.'
+            - uuid: 1394db1d36454c3dacda42d8442c1b0d
+              expression: 'last(/Oracle MX v.0.2/oracle.level1_backup)>{$ORACLE_L1_BACKUP_WARN}'
+              name: 'No level 1 backups'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE_L1_BACKUP_WARN}'
+              priority: WARNING
+              description: 'Database has not been backed up for a long time. Check out backup logs.'
+              dependencies:
+                - name: 'No level 1 backups'
+                  expression: 'last(/Oracle MX v.0.2/oracle.level1_backup)>{$ORACLE_L1_BACKUP_CRIT}'
+        - uuid: bcf9ce284b8f4c80bca04ba4c6b949ee
+          name: 'Oracle: BKP, Not backed up'
+          type: DEPENDENT
+          key: oracle.no_backup
+          delay: '0'
+          history: 7d
+          description: 'Some files have not been backed up at all. Count of them.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.NAME==''BACKUP::NOT_BAKED_UP_COUNT'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_backup_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+        - uuid: f3252ec418234ea3bb2a321b1a3a89a6
+          name: 'Oracle: PARAM, Processes limit'
+          type: DEPENDENT
+          key: oracle.processes_limit
+          delay: '0'
+          history: 7d
+          description: 'Max processes.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''SYSPARAM::processes'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+        - uuid: 2fda7763d9f44d4888d53912114df22f
+          name: 'Oracle: PROC, Processes Total'
+          type: DEPENDENT
+          key: oracle.proc_total
+          delay: '0'
+          history: 7d
+          description: 'Total processes.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''PROC::Procnum'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+        - uuid: 7ee7af9f643c48b888c3ace704d35007
+          name: 'Oracle: REDO, Available to Switch'
+          type: DEPENDENT
+          key: oracle.redo_avail
+          delay: '0'
+          history: 7d
+          description: 'Redo logs count available to switch.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''REDO::Available'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+        - uuid: 28448eaed5304e6f9041fa8f6ade9f4e
+          name: 'Oracle: PARAM, Sessions limit'
+          type: DEPENDENT
+          key: oracle.sessions_limit
+          delay: '0'
+          history: 7d
+          description: 'Max sessions.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''SYSPARAM::sessions'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+        - uuid: 53df3bd7e56b4de9a0038e98057e6889
+          name: 'Oracle: SESS, Sessions Active'
+          type: DEPENDENT
+          key: oracle.sess_active
+          delay: '0'
+          history: 7d
+          description: 'Active sessions.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''SESSION::Active Foreground'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+          triggers:
+            - uuid: 9ab6ec4cd824425f9677289b87a242ac
+              expression: 'min(/Oracle MX v.0.2/oracle.sess_active,15m)>{$ACTIVE_SESSIONS_CRIT}'
+              name: 'Too many active sessions.'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ACTIVE_SESSIONS_CRIT}'
+              priority: HIGH
+              description: 'Too many active sessions.'
+            - uuid: acd7503d110a4bb3a7a6fdd423883a7f
+              expression: 'min(/Oracle MX v.0.2/oracle.sess_active,15m)>{$ACTIVE_SESSIONS_WARN}'
+              name: 'Too many active sessions.'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ACTIVE_SESSIONS_WARN}'
+              priority: WARNING
+              description: 'Too many active sessions.'
+              dependencies:
+                - name: 'Too many active sessions.'
+                  expression: 'min(/Oracle MX v.0.2/oracle.sess_active,15m)>{$ACTIVE_SESSIONS_CRIT}'
+        - uuid: 615317214cef41e1bcc7b8e2a9bf35be
+          name: 'Oracle: SESS, Locked Count'
+          type: DEPENDENT
+          key: oracle.sess_locked
+          delay: '0'
+          history: 7d
+          description: 'Locked sessions now.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''SESSION::Locked now'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+          triggers:
+            - uuid: 1bb02617856c418fb59386bad00b7e7e
+              expression: 'min(/Oracle MX v.0.2/oracle.sess_locked,15m)>{$ORACLE.SESSION.LOCK.COUNT_CRIT}'
+              name: 'There are too many locked sessions.'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE.SESSION.LOCK.COUNT_CRIT}'
+              priority: HIGH
+              description: 'There are many locked sessions now.'
+            - uuid: 6da5a5529fc74ada9077954a2e914365
+              expression: 'min(/Oracle MX v.0.2/oracle.sess_locked,15m)>{$ORACLE.SESSION.LOCK.COUNT_WARN}'
+              name: 'There are too many locked sessions.'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE.SESSION.LOCK.COUNT_WARN}'
+              priority: WARNING
+              description: 'There are many locked sessions now.'
+              dependencies:
+                - name: 'There are too many locked sessions.'
+                  expression: 'min(/Oracle MX v.0.2/oracle.sess_locked,15m)>{$ORACLE.SESSION.LOCK.COUNT_CRIT}'
+        - uuid: b33a75be1032406ea6e084d6bf25fa95
+          name: 'Oracle: SESS, Locked Long'
+          type: DEPENDENT
+          key: oracle.sess_long_locked
+          delay: '0'
+          history: 7d
+          description: 'Locked sessions for a long time.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''SESSION::Long time locked'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+          triggers:
+            - uuid: 0cf357d1f44147ff9278ee1e196d5b0f
+              expression: 'last(/Oracle MX v.0.2/oracle.sess_long_locked)>{$ORACLE.SESSION.LONG_LOCK.COUNT_CRIT}'
+              name: 'There are some long locks.'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE.SESSION.LONG_LOCK.COUNT_CRIT}'
+              priority: HIGH
+              description: 'Long locks exist.'
+              manual_close: 'YES'
+            - uuid: 78c0081592d4488b9e9d2512148142c8
+              expression: 'last(/Oracle MX v.0.2/oracle.sess_long_locked)>{$ORACLE.SESSION.LONG_LOCK.COUNT_WARN}'
+              name: 'There are some long locks.'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE.SESSION.LONG_LOCK.COUNT_WARN}'
+              priority: WARNING
+              description: 'Long locks exist.'
+              dependencies:
+                - name: 'There are some long locks.'
+                  expression: 'last(/Oracle MX v.0.2/oracle.sess_long_locked)>{$ORACLE.SESSION.LONG_LOCK.COUNT_CRIT}'
+        - uuid: 5af31b25591a42a09a56b0c50fc57a95
+          name: 'Oracle: INSTANCE, Startup time'
+          type: DEPENDENT
+          key: oracle.startup_time
+          delay: '0'
+          history: 7d
+          description: 'Instance startup time.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''INSTANCE::Startup time'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_system_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+          triggers:
+            - uuid: 615b1334bfd74f24a1c7fd95f191da52
+              expression: 'change(/Oracle MX v.0.2/oracle.startup_time)>0'
+              name: 'Instance has been restarted.'
+              opdata: 'Free: {ITEM.LASTVALUE1}'
+              priority: WARNING
+              description: 'Instance has been restarted.'
+        - uuid: c67a77f2e215457291bf75dcf4ceb054
+          name: 'Oracle: STANDBY, apply lag'
+          type: DEPENDENT
+          key: oracle.stb_apply_lag
+          delay: '0'
+          history: 7d
+          trends: '0'
+          description: |
+            Standby apply lag (seconds).
+            It works just on standby database.
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''STANDBY::apply lag'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_standby_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+          triggers:
+            - uuid: 46a4514a074e4f34883664cf0c9b3b9e
+              expression: 'min(/Oracle MX v.0.2/oracle.stb_apply_lag,30m)> {$STANDBY_APPLY_LAG_CRIT}'
+              name: 'Apply lag is too high.'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$STANDBY_APPLY_LAG_CRIT}'
+              priority: HIGH
+              description: 'Apply lag is too high.'
+            - uuid: 52a0fd9f224e400fbc139f63e0d88cde
+              expression: 'min(/Oracle MX v.0.2/oracle.stb_apply_lag,30m)> {$STANDBY_APPLY_LAG_WARN}'
+              name: 'Apply lag is too high.'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$STANDBY_APPLY_LAG_WARN}'
+              priority: WARNING
+              description: 'Apply lag is too high.'
+              dependencies:
+                - name: 'Apply lag is too high.'
+                  expression: 'min(/Oracle MX v.0.2/oracle.stb_apply_lag,30m)> {$STANDBY_APPLY_LAG_CRIT}'
+        - uuid: 86f9baa1b92a441c85f34d26634c48a8
+          name: 'Oracle: STANDBY, MRP0 started'
+          type: DEPENDENT
+          key: oracle.stb_MRP0_started
+          delay: '0'
+          history: 7d
+          trends: '0'
+          description: |
+            MRP0 started - 1, does not started - 0 (problem).
+            It works just on standby database.
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''STANDBY::MRP0 started'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_standby_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+          triggers:
+            - uuid: 81e74cbcfb734c7ba654dcb7414218b9
+              expression: 'last(/Oracle MX v.0.2/oracle.stb_MRP0_started)=0'
+              recovery_mode: RECOVERY_EXPRESSION
+              recovery_expression: 'last(/Oracle MX v.0.2/oracle.stb_MRP0_started)=1'
+              name: 'MRP0 is not running.'
+              opdata: 'Status: {ITEM.LASTVALUE1}'
+              priority: HIGH
+              manual_close: 'YES'
+        - uuid: 5da2b96a1ade4730abd78c15cdead847
+          name: 'Oracle: STANDBY, MRP0 status'
+          type: DEPENDENT
+          key: oracle.stb_MRP0_status
+          delay: '0'
+          history: 7d
+          value_type: CHAR
+          trends: '0'
+          description: |
+            MRP0 status.
+            It works just on standby database.
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''STANDBY::MRP0 status'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_standby_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+        - uuid: e05ba7855f0344c1a4e1408945a68fbd
+          name: 'Oracle: STANDBY, transport lag'
+          type: DEPENDENT
+          key: oracle.stb_transport_lag
+          delay: '0'
+          history: 7d
+          trends: '0'
+          description: |
+            Standby transport lag (seconds).
+            It works just on standby database.
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.METRIC==''STANDBY::transport lag'')].VALUE.first()'
+          master_item:
+            key: 'db.odbc.get[get_standby_metrics,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          tags:
+            - tag: Application
+              value: Oracle
+          triggers:
+            - uuid: 3a310595364645238b47d1a9759e1f61
+              expression: 'min(/Oracle MX v.0.2/oracle.stb_transport_lag,30m)> {$STANDBY_TRANSPORT_LAG_CRIT}'
+              name: 'Transport lag is too high.'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$STANDBY_TRANSPORT_LAG_CRIT}'
+              priority: HIGH
+              description: 'Transport lag is too high.'
+            - uuid: f4ef6a497d6b4a42b825cdd013ce9356
+              expression: 'min(/Oracle MX v.0.2/oracle.stb_transport_lag,30m)> {$STANDBY_TRANSPORT_LAG_WARN}'
+              name: 'Transport lag is too high.'
+              opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$STANDBY_TRANSPORT_LAG_WARN}'
+              priority: HIGH
+              description: 'Transport lag is too high.'
+              dependencies:
+                - name: 'Transport lag is too high.'
+                  expression: 'min(/Oracle MX v.0.2/oracle.stb_transport_lag,30m)> {$STANDBY_TRANSPORT_LAG_CRIT}'
+        - uuid: ec7dc21d68714a2796053e5a890f8724
+          name: 'Unsuported Items Count'
+          type: INTERNAL
+          key: 'zabbix[host,,items_unsupported]'
+          history: 2d
+          description: |
+            Zabbix Items Count in Not supported state.
+            Go Configuration -> Hosts, select an appropriate Host and check its Items.
+          triggers:
+            - uuid: 04243153cf3943de90393320b9964d22
+              expression: 'min(/Oracle MX v.0.2/zabbix[host,,items_unsupported],20m)>1'
+              name: 'There are some unsupported items.'
+              opdata: 'Count: {ITEM.LASTVALUE1}'
+              priority: HIGH
+              description: |
+                Some Items on this Host are in "Not supported" state.
+                Go Configuration -> Hosts, select this Host and check the Items.
+              manual_close: 'YES'
+      discovery_rules:
+        - uuid: 2f8b37f82f4540eca5960828989fbd13
+          name: 'Archive log discovery'
+          type: ODBC
+          key: 'db.odbc.discovery[archivelog,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 1h
+          params: |
+            SELECT d.dest_name
+            FROM v$archive_dest d , v$database db WHERE d.status != 'INACTIVE' AND db.log_mode = 'ARCHIVELOG' and db.DATABASE_ROLE='PRIMARY';
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          description: 'Archive logs destinations.'
+          item_prototypes:
+            - uuid: 95463306eb6544d58443cdca7382310f
+              name: 'Archivelog ''{#DEST_NAME}'': Error'
+              type: DEPENDENT
+              key: 'oracle.archivelog_error["{#DEST_NAME}"]'
+              delay: '0'
+              history: 7d
+              value_type: TEXT
+              trends: '0'
+              description: 'Displays the error text.'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.DEST_NAME==''{#DEST_NAME}'')].ERROR.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+              master_item:
+                key: 'db.odbc.get[get_archivelog_stat,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: ArchiveDests
+            - uuid: ad85361248a143c1bda5855608609686
+              name: 'Archivelog ''{#DEST_NAME}'': Last sequence'
+              type: DEPENDENT
+              key: 'oracle.archivelog_log_sequence["{#DEST_NAME}"]'
+              delay: '0'
+              history: 7d
+              description: 'The last archivelog sequence number has been archived.'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.DEST_NAME==''{#DEST_NAME}'')].LOG_SEQUENCE.first()'
+              master_item:
+                key: 'db.odbc.get[get_archivelog_stat,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: ArchiveDest
+            - uuid: cb48a562a86b4b5ab6c0e20231396d95
+              name: 'Archivelog ''{#DEST_NAME}'': Status'
+              type: DEPENDENT
+              key: 'oracle.archivelog_log_status["{#DEST_NAME}"]'
+              delay: '0'
+              history: 7d
+              description: 'The current status of the destination: 3 - ''Valid'', 2 - ''Deferred'',1 - ''Error'', 0 - ''Unknown'''
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.DEST_NAME==''{#DEST_NAME}'')].STATUS.first()'
+              master_item:
+                key: 'db.odbc.get[get_archivelog_stat,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: ArchiveDest
+            - uuid: 6de6326eff074da396efde5241b59fd5
+              name: 'Archivelog ''{#DEST_NAME}'': Transfer Lag'
+              type: DEPENDENT
+              key: 'oracle.archivelog_log_transfer_lag["{#DEST_NAME}"]'
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              description: 'Lag between transferred log sequence and the last local archined log.'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.DEST_NAME==''{#DEST_NAME}'')].TRANSFER_LAG.first()'
+              master_item:
+                key: 'db.odbc.get[get_archivelog_stat,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: ArchiveDest
+              trigger_prototypes:
+                - uuid: 2e842d8567174426a9b9e8aa562be254
+                  expression: 'min(/Oracle MX v.0.2/oracle.archivelog_log_transfer_lag["{#DEST_NAME}"],30m)>{$ORACLE_ARCHIVELOG_TRANSFER_LAG_CRIT:"{#DEST_NAME}"}'
+                  recovery_mode: RECOVERY_EXPRESSION
+                  recovery_expression: 'last(/Oracle MX v.0.2/oracle.archivelog_log_transfer_lag["{#DEST_NAME}"])<{$ORACLE_ARCHIVELOG_TRANSFER_LAG_CRIT:"{#DEST_NAME}"}'
+                  name: 'Archivelog transfer lag ''{#DEST_NAME}'' is too high.'
+                  opdata: 'Error: {ITEM.LASTVALUE1}'
+                  priority: HIGH
+                  description: 'Transfer lag is too high. Please, check out your standby destination.'
+          trigger_prototypes:
+            - uuid: 031fb8c6a8e14874ba54108ba2c28cae
+              expression: 'max(/Oracle MX v.0.2/oracle.archivelog_log_status["{#DEST_NAME}"],30m)<2 and length(last(/Oracle MX v.0.2/oracle.archivelog_error["{#DEST_NAME}"]))>5'
+              name: 'Archivelog destination ''{#DEST_NAME}'' is not valid.'
+              opdata: 'Error: {ITEM.LASTVALUE2}'
+              priority: HIGH
+              description: 'Log destination is not in 3 - Valid or 2 - Deferred.'
+        - uuid: c543482a11b54d148feec63566463491
+          name: 'ASM disk groups discovery'
+          type: ODBC
+          key: 'db.odbc.discovery[asm,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 1h
+          params: 'SELECT name AS dg_name FROM v$asm_diskgroup;'
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          description: 'ASM disk groups'
+          item_prototypes:
+            - uuid: 8101d26728f9408ca2610c55b23a5c47
+              name: 'ASM ''{#DG_NAME}'': Free size'
+              type: DEPENDENT
+              key: 'oracle.asm_free_size["{#DG_NAME}"]'
+              delay: '0'
+              history: 7d
+              units: B
+              description: 'Free size of ASM disk group.'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.DG_NAME==''{#DG_NAME}'')].FREE_SIZE_BYTE.first()'
+              master_item:
+                key: 'db.odbc.get[get_asm_stat,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: 'Oracle ASM'
+              trigger_prototypes:
+                - uuid: 04cc00d37c40490ea697c61a75c62586
+                  expression: 'last(/Oracle MX v.0.2/oracle.asm_free_size["{#DG_NAME}"])<{$ORACLE_ASM_FREESPACE_MB_CRIT:"{#DG_NAME}"}'
+                  name: 'ASM ''{#DG_NAME}'': Disk group usage is too high (over{$ORACLE_ASM_FREESPACE_MB_CRIT:"{#DG_NAME}"})'
+                  opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE_ASM_FREESPACE_MB_CRIT:"{#DG_NAME}"}'
+                  priority: HIGH
+                  description: 'Make some free space in the Disk Group.'
+                - uuid: 1a565ee65b6840098c51aa33bdb99b49
+                  expression: 'last(/Oracle MX v.0.2/oracle.asm_free_size["{#DG_NAME}"])<{$ORACLE_ASM_FREESPACE_MB_WARN:"{#DG_NAME}"}'
+                  name: 'ASM ''{#DG_NAME}'': Disk group usage is too high (over {$ORACLE_ASM_FREESPACE_MB_WARN:"{#DG_NAME}"})'
+                  opdata: 'last: {ITEM.LASTVALUE1}, threshold: {$ORACLE_ASM_FREESPACE_MB_WARN:"{#DG_NAME}"}'
+                  priority: WARNING
+                  description: 'Make some free space in the Disk Group.'
+                  dependencies:
+                    - name: 'ASM ''{#DG_NAME}'': Disk group usage is too high (over{$ORACLE_ASM_FREESPACE_MB_CRIT:"{#DG_NAME}"})'
+                      expression: 'last(/Oracle MX v.0.2/oracle.asm_free_size["{#DG_NAME}"])<{$ORACLE_ASM_FREESPACE_MB_CRIT:"{#DG_NAME}"}'
+            - uuid: be464f074ded4260815fc36df4320fb7
+              name: 'ASM ''{#DG_NAME}'': Total size'
+              type: DEPENDENT
+              key: 'oracle.asm_total_size["{#DG_NAME}"]'
+              delay: '0'
+              history: 7d
+              units: B
+              description: 'Total size of ASM disk group.'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.DG_NAME==''{#DG_NAME}'')].SIZE_BYTE.first()'
+              master_item:
+                key: 'db.odbc.get[get_asm_stat,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: 'Oracle ASM'
+            - uuid: e0aed8c3b8f3489ba342a2d535ba5979
+              name: 'ASM ''{#DG_NAME}'': Used size'
+              type: DEPENDENT
+              key: 'oracle.asm_used_size["{#DG_NAME}"]'
+              delay: '0'
+              history: 7d
+              units: B
+              description: 'Used size of ASM disk group.'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.DG_NAME==''{#DG_NAME}'')].USED_BYTE.first()'
+              master_item:
+                key: 'db.odbc.get[get_asm_stat,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: 'Oracle ASM'
+        - uuid: cc30770914e640faa4ad55d7b6456b21
+          name: 'Tablespace discovery'
+          type: ODBC
+          key: 'db.odbc.discovery[tbsname,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+          delay: 1h
+          params: 'select tablespace_name tablespace,contents from dba_tablespaces;'
+          username: '{$ORACLE.USER}'
+          password: '{$ORACLE.PASSWORD}'
+          filter:
+            evaltype: AND
+            conditions:
+              - macro: '{#TABLESPACE}'
+                value: '{$ORACLE.TABLESPACE.NAME.MATCHES}'
+                formulaid: A
+              - macro: '{#TABLESPACE}'
+                value: '{$ORACLE.TABLESPACE.NAME.NOT_MATCHES}'
+                operator: NOT_MATCHES_REGEX
+                formulaid: B
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          description: 'Scanning tablespaces in DBMS.'
+          item_prototypes:
+            - uuid: 2d2d4eb787e04eed893d4c28454f41a9
+              name: 'Oracle TBS ''{#TABLESPACE}'': Tablespace allocated, bytes'
+              type: DEPENDENT
+              key: 'oracle.tbs_alloc_bytes["{#TABLESPACE}"]'
+              delay: '0'
+              history: 7d
+              units: B
+              description: 'Currently allocated bytes for the tablespace (sum of the current size of the datafiles).'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.TABLESPACE==''{#TABLESPACE}'')].FILE_BYTES.first()'
+              master_item:
+                key: 'db.odbc.get[get_tablespaces_stats,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: 'Oracle {#CONTENTS} Tablespaces. {#TABLESPACE}'
+            - uuid: 5e8f8fd546bd421ba80f7430ddb6f7ba
+              name: 'Oracle TBS ''{#TABLESPACE}'': Tablespace free, bytes'
+              type: DEPENDENT
+              key: 'oracle.tbs_free_bytes["{#TABLESPACE}"]'
+              delay: '0'
+              history: 7d
+              units: B
+              description: 'Free bytes of allocated space.'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.TABLESPACE==''{#TABLESPACE}'')].FREE_BYTES.first()'
+              master_item:
+                key: 'db.odbc.get[get_tablespaces_stats,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: 'Oracle {#CONTENTS} Tablespaces. {#TABLESPACE}'
+            - uuid: 9f821997dba743e9bc1d9db48e9ba65f
+              name: 'Oracle TBS ''{#TABLESPACE}'': Tablespace MAX size, bytes'
+              type: DEPENDENT
+              key: 'oracle.tbs_max_bytes["{#TABLESPACE}"]'
+              delay: '0'
+              history: 7d
+              units: B
+              description: 'Maximum size of tablespace.'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.TABLESPACE==''{#TABLESPACE}'')].MAX_BYTES.first()'
+              master_item:
+                key: 'db.odbc.get[get_tablespaces_stats,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: 'Oracle {#CONTENTS} Tablespaces. {#TABLESPACE}'
+            - uuid: d03a9a8a99014353af7b683feddfc1a4
+              name: 'Oracle TBS ''{#TABLESPACE}'': Open status'
+              type: DEPENDENT
+              key: 'oracle.tbs_status["{#TABLESPACE}"]'
+              delay: '0'
+              history: 7d
+              description: 'Tablespace status. 1 - ''ONLINE'' 2 - ''OFFLINE'' 3- ''READ ONLY'''
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.TABLESPACE==''{#TABLESPACE}'')].STATUS.first()'
+              master_item:
+                key: 'db.odbc.get[get_tablespaces_stats,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: 'Oracle {#CONTENTS} Tablespaces. {#TABLESPACE}'
+              trigger_prototypes:
+                - uuid: 90b4cbaa98aa484e8c8ddfc35ab76686
+                  expression: 'last(/Oracle MX v.0.2/oracle.tbs_status["{#TABLESPACE}"])=2'
+                  name: 'Oracle TBS ''{#TABLESPACE}'': Tablespace is OFFLINE'
+                  priority: WARNING
+                  description: 'The tablespace is in the offline state.'
+            - uuid: 7437884350054f9780b2770a6214862c
+              name: 'Oracle TBS ''{#TABLESPACE}'': Tablespace used, bytes'
+              type: DEPENDENT
+              key: 'oracle.tbs_used_bytes["{#TABLESPACE}"]'
+              delay: '0'
+              history: 7d
+              units: B
+              description: 'Currently used bytes of the tablespace (current size of datafiles-free space).'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.TABLESPACE==''{#TABLESPACE}'')].USED_BYTES.first()'
+              master_item:
+                key: 'db.odbc.get[get_tablespaces_stats,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: 'Oracle {#CONTENTS} Tablespaces. {#TABLESPACE}'
+            - uuid: 61b98eeb46f24ed88bd2bccc8f267406
+              name: 'Oracle TBS ''{#TABLESPACE}'': Tablespace usage, percent'
+              type: DEPENDENT
+              key: 'oracle.tbs_used_file_pct["{#TABLESPACE}"]'
+              delay: '0'
+              history: 7d
+              units: '%'
+              description: 'Used bytes/Allocated bytes*100'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.TABLESPACE==''{#TABLESPACE}'')].USED_MAX_PCT.first()'
+              master_item:
+                key: 'db.odbc.get[get_tablespaces_stats,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]'
+              tags:
+                - tag: Application
+                  value: 'Oracle {#CONTENTS} Tablespaces. {#TABLESPACE}'
+          trigger_prototypes:
+            - uuid: 67f24cdcb5584de18692397255fe68d5
+              expression: 'last(/Oracle MX v.0.2/oracle.tbs_free_bytes["{#TABLESPACE}"])<{$ORACLE_TBS_FREESPACE_MB_WARN:"{#TABLESPACE}"} and last(/Oracle MX v.0.2/oracle.tbs_max_bytes["{#TABLESPACE}"])>0'
+              recovery_mode: RECOVERY_EXPRESSION
+              recovery_expression: 'last(/Oracle MX v.0.2/oracle.tbs_free_bytes["{#TABLESPACE}"])>{$ORACLE_TBS_FREESPACE_MB_WARN:"{#TABLESPACE}"} or last(/Oracle MX v.0.2/oracle.tbs_status["{#TABLESPACE}"])=2 or last(/Oracle MX v.0.2/oracle.tbs_status["{#TABLESPACE}"])=3'
+              name: 'Oracle TBS ''{#TABLESPACE}'': Tablespace utilization is high.'
+              opdata: 'free: {ITEM.LASTVALUE1}, size: {ITEM.LASTVALUE2}, threshold {$ORACLE_TBS_FREESPACE_MB_WARN:"{#TABLESPACE}"}'
+              priority: WARNING
+              description: 'Free space in the tablespace ''{#TABLESPACE}'' less then {$ORACLE_TBS_FREESPACE_MB_WARN:"{#TABLESPACE}"}. Add some space.'
+              dependencies:
+                - name: 'Oracle TBS ''{#TABLESPACE}'': Tablespace utilization is too high.'
+                  expression: 'last(/Oracle MX v.0.2/oracle.tbs_free_bytes["{#TABLESPACE}"])<{$ORACLE_TBS_FREESPACE_MB_CRIT:"{#TABLESPACE}"} and last(/Oracle MX v.0.2/oracle.tbs_max_bytes["{#TABLESPACE}"])>0'
+                  recovery_expression: 'last(/Oracle MX v.0.2/oracle.tbs_free_bytes["{#TABLESPACE}"])>{$ORACLE_TBS_FREESPACE_MB_CRIT:"{#TABLESPACE}"} or last(/Oracle MX v.0.2/oracle.tbs_status["{#TABLESPACE}"])=2 or last(/Oracle MX v.0.2/oracle.tbs_status["{#TABLESPACE}"])=3'
+              tags:
+                - tag: Free
+                  value: '{ITEM.LASTVALUE1}'
+            - uuid: d39be272b33145ce991f54b06621cff5
+              expression: 'last(/Oracle MX v.0.2/oracle.tbs_free_bytes["{#TABLESPACE}"])<{$ORACLE_TBS_FREESPACE_MB_CRIT:"{#TABLESPACE}"} and last(/Oracle MX v.0.2/oracle.tbs_max_bytes["{#TABLESPACE}"])>0'
+              recovery_mode: RECOVERY_EXPRESSION
+              recovery_expression: 'last(/Oracle MX v.0.2/oracle.tbs_free_bytes["{#TABLESPACE}"])>{$ORACLE_TBS_FREESPACE_MB_CRIT:"{#TABLESPACE}"} or last(/Oracle MX v.0.2/oracle.tbs_status["{#TABLESPACE}"])=2 or last(/Oracle MX v.0.2/oracle.tbs_status["{#TABLESPACE}"])=3'
+              name: 'Oracle TBS ''{#TABLESPACE}'': Tablespace utilization is too high.'
+              opdata: 'free: {ITEM.LASTVALUE1}, size: {ITEM.LASTVALUE2}, threshold {$ORACLE_TBS_FREESPACE_MB_CRIT:"{#TABLESPACE}"}'
+              priority: HIGH
+              description: 'Free space in the tablespace ''{#TABLESPACE}'' is less then {$ORACLE_TBS_FREESPACE_MB_CRIT:"{#TABLESPACE}"}. Add some space.'
+              manual_close: 'YES'
+              tags:
+                - tag: Free
+                  value: '{ITEM.LASTVALUE1}'
+      macros:
+        - macro: '{$ACTIVE_SESSIONS_CRIT}'
+          value: '30'
+          description: 'Active sessions count threshold.'
+        - macro: '{$ACTIVE_SESSIONS_WARN}'
+          value: '20'
+          description: 'Active sessions count threshold.'
+        - macro: '{$ORACLE.DRIVER}'
+          value: /usr/lib/oracle/19.29/client64/libsqora.so.19.1
+          description: 'Oracle driver path. e.g /usr/lib/oracle/21/client64/lib/libsqora.so.21.1'
+        - macro: '{$ORACLE.FRA_FREESPACE_CRIT}'
+          value: 100G
+          description: 'Free space in FRA (critical)'
+        - macro: '{$ORACLE.FRA_FREESPACE_WARN}'
+          value: 200G
+          description: 'Free space in FRA (warning)'
+        - macro: '{$ORACLE.HOST}'
+          value: '<Put IP address here>'
+          description: 'Oracle host.'
+        - macro: '{$ORACLE.PASSWORD}'
+          value: '<Put your password here>'
+          description: 'Oracle user password.'
+        - macro: '{$ORACLE.PORT}'
+          value: '1521'
+          description: 'Oracle DB TCP port.'
+        - macro: '{$ORACLE.SERVICE}'
+          value: '<Put oracle service name here>'
+          description: 'Oracle service name'
+        - macro: '{$ORACLE.SESSION.LOCK.COUNT_CRIT}'
+          value: '10'
+          description: 'Lock count threshold.'
+        - macro: '{$ORACLE.SESSION.LOCK.COUNT_WARN}'
+          value: '3'
+          description: 'Lock count threshold.'
+        - macro: '{$ORACLE.SESSION.LOCK.MAX.TIME}'
+          value: '1800'
+          description: 'Lock threashold (sec).'
+        - macro: '{$ORACLE.SESSION.LONG_LOCK.COUNT_CRIT}'
+          value: '0'
+          description: 'Long lock count threshold.'
+        - macro: '{$ORACLE.SESSION.LONG_LOCK.COUNT_WARN}'
+          value: '5'
+          description: 'Long lock count threshold.'
+        - macro: '{$ORACLE.TABLESPACE.NAME.MATCHES}'
+          value: '.*'
+          description: 'This macro is used in tablespace discovery. It can be overridden on a host or linked template level.'
+        - macro: '{$ORACLE.TABLESPACE.NAME.NOT_MATCHES}'
+          value: CHANGE_IF_NEEDED
+          description: 'This macro is used in tablespace discovery. It can be overridden on a host or linked template level.'
+        - macro: '{$ORACLE.USER}'
+          value: '<Put your username here>'
+          description: 'Oracle username.'
+        - macro: '{$ORACLE_ALOG_BACKUP_CRIT}'
+          value: 8h
+          description: 'Archivelog Backup Threashold.'
+        - macro: '{$ORACLE_ALOG_BACKUP_WARN}'
+          value: 4h
+          description: 'Archivelog Backup Threashold.'
+        - macro: '{$ORACLE_CF_BACKUP_CRIT}'
+          value: 8h
+          description: 'Controlfile Backup Threashold.'
+        - macro: '{$ORACLE_CF_BACKUP_WARN}'
+          value: 4h
+          description: 'Controlfile Backup Threashold.'
+        - macro: '{$ORACLE_L0_BACKUP_CRIT}'
+          value: 9d
+          description: 'Incremental Level 0 Backup Threashold.'
+        - macro: '{$ORACLE_L0_BACKUP_WARN}'
+          value: 8d
+          description: 'Incremental Level 0 Backup Threashold.'
+        - macro: '{$ORACLE_L1_BACKUP_CRIT}'
+          value: 3d
+          description: 'Incremental Level 1 Backup Threashold.'
+        - macro: '{$ORACLE_L1_BACKUP_WARN}'
+          value: 2d
+          description: 'Incremental Level 1 Backup Threashold.'
+        - macro: '{$ORACLE_STANDBY_TRANSFER_LAG}'
+          value: '5'
+          description: 'Standby Transfer Lag (amount of logs)'
+        - macro: '{$STANDBY_APPLY_LAG_CRIT}'
+          value: '600'
+        - macro: '{$STANDBY_APPLY_LAG_WARN}'
+          value: '60'
+        - macro: '{$STANDBY_TRANSPORT_LAG_CRIT}'
+          value: '600'
+        - macro: '{$STANDBY_TRANSPORT_LAG_WARN}'
+          value: '60'
+  triggers:
+    - uuid: e2bbdbdecb3b4b7abae35257fd4a848b
+      expression: 'last(/Oracle MX v.0.2/oracle.fra_space_free)<{$ORACLE.FRA_FREESPACE_WARN} and last(/Oracle MX v.0.2/oracle.fra_space_limit)>0'
+      name: 'Oracle: FRA utilization is high (less then {$ORACLE.FRA_FREESPACE_WARN}).'
+      opdata: 'current: {ITEM.LASTVALUE1}, threshold: {$ORACLE.FRA_FREESPACE_WARN}, FRA size: {ITEM.LASTVALUE2}, alert started: {ITEM.VALUE1}'
+      priority: WARNING
+      description: 'Lack of free space in the FRA.'
+      dependencies:
+        - name: 'Oracle: FRA utilization is too high (less then {$ORACLE.FRA_FREESPACE_CRIT}).'
+          expression: 'last(/Oracle MX v.0.2/oracle.fra_space_free)<{$ORACLE.FRA_FREESPACE_CRIT} and last(/Oracle MX v.0.2/oracle.fra_space_limit)>0'
+    - uuid: cb792e02466b401aae7d026319668ad8
+      expression: 'last(/Oracle MX v.0.2/oracle.fra_space_free)<{$ORACLE.FRA_FREESPACE_CRIT} and last(/Oracle MX v.0.2/oracle.fra_space_limit)>0'
+      name: 'Oracle: FRA utilization is too high (less then {$ORACLE.FRA_FREESPACE_CRIT}).'
+      opdata: 'current: {ITEM.LASTVALUE1}, threshold: {$ORACLE.FRA_FREESPACE_CRIT}, FRA size: {ITEM.LASTVALUE2}, alert started: {ITEM.VALUE1}'
+      priority: HIGH
+      description: 'Lack of free space in the FRA.'
+    - uuid: c55035a422d44c25b13bb08af3f0db20
+      expression: 'last(/Oracle MX v.0.2/oracle.ALERTLOG_ERROR_COUNT)>0 and length(last(/Oracle MX v.0.2/db.odbc.get[get_alertlog_messages,,"Driver={$ORACLE.DRIVER};DBQ=//{$ORACLE.HOST}:{$ORACLE.PORT}/{$ORACLE.SERVICE};"]))>0'
+      name: 'There are some errors in alert.log!'
+      opdata: 'last: {ITEM.LASTVALUE1}'
+      priority: HIGH
+      description: 'There are some critical errors in alert.log. Please, check out the alert log.'
