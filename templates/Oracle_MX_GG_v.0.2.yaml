@@ -1,0 +1,118 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: ded6d8e9a8b04614b9ebf9ca130ad92f
+      name: OracleDatabases
+  templates:
+    - uuid: 3a468822f73849b696eb9874b54b9b2c
+      template: 'Oracle MX GG v.0.2'
+      name: 'Oracle MX GG v.0.2'
+      groups:
+        - name: OracleDatabases
+      items:
+        - uuid: 160599d5a10f49cbb2dccb6074441c01
+          name: 'GG All Data'
+          type: TRAP
+          key: ogg.metrics
+          delay: '0'
+          history: 1d
+          value_type: TEXT
+          trends: '0'
+      discovery_rules:
+        - uuid: 54f7790afd374dd4a526453fa432c649
+          name: 'GG Processes Discovery'
+          type: TRAP
+          key: ogg.discovery
+          delay: '0'
+          lifetime: 365d
+          enabled_lifetime_type: DISABLE_NEVER
+          item_prototypes:
+            - uuid: 7921d7a74618478892506a01d181148f
+              name: 'GG Process ''{#DEST_NAME}'': Lag'
+              type: DEPENDENT
+              key: 'oracle.gg.process_lag["{#DEST_NAME}"]'
+              delay: '0'
+              history: 90d
+              units: s
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.DEST_NAME==''{#DEST_NAME}'')].LAG.first()'
+              master_item:
+                key: ogg.metrics
+              trigger_prototypes:
+                - uuid: 0fe1b2bd6c0b40edb6a151cbc7903cd6
+                  expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_lag["{#DEST_NAME}"])>{$ORACLE_GG_LAG_CRIT:"{#DEST_NAME}"}'
+                  recovery_mode: RECOVERY_EXPRESSION
+                  recovery_expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_lag["{#DEST_NAME}"])<{$ORACLE_GG_LAG_CRIT:"{#DEST_NAME}"}'
+                  name: 'Golden Gate Process ''{#DEST_NAME}'' lag is too high.'
+                  opdata: 'Lag: {ITEM.LASTVALUE1}, threshold {$ORACLE_GG_LAG_CRIT:"{#DEST_NAME}"}'
+                  priority: HIGH
+                  description: 'Lag ''{#DEST_NAME}'' is more then {$ORACLE_GG_LAG_CRIT:"{#DEST_NAME}"}.'
+                - uuid: e52baea7d90345a4932c42207674e6d9
+                  expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_lag["{#DEST_NAME}"])>{$ORACLE_GG_LAG_WARN:"{#DEST_NAME}"}'
+                  recovery_mode: RECOVERY_EXPRESSION
+                  recovery_expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_lag["{#DEST_NAME}"])<{$ORACLE_GG_LAG_WARN:"{#DEST_NAME}"}'
+                  name: 'Golden Gate Process ''{#DEST_NAME}'' lag is too high.'
+                  opdata: 'Lag: {ITEM.LASTVALUE1}, threshold {$ORACLE_GG_LAG_WARN:"{#DEST_NAME}"}'
+                  priority: WARNING
+                  description: 'Lag ''{#DEST_NAME}'' is more then {$ORACLE_GG_LAG_WARN:"{#DEST_NAME}"}.'
+                  dependencies:
+                    - name: 'Golden Gate Process ''{#DEST_NAME}'' lag is too high.'
+                      expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_lag["{#DEST_NAME}"])>{$ORACLE_GG_LAG_CRIT:"{#DEST_NAME}"}'
+                      recovery_expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_lag["{#DEST_NAME}"])<{$ORACLE_GG_LAG_CRIT:"{#DEST_NAME}"}'
+            - uuid: 1f248044ba6a47c299c6ad64c1f161f5
+              name: 'GG Process ''{#DEST_NAME}'': Status'
+              type: DEPENDENT
+              key: 'oracle.gg.process_status["{#DEST_NAME}"]'
+              delay: '0'
+              history: 90d
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.DEST_NAME==''{#DEST_NAME}'')].STATUS.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+              master_item:
+                key: ogg.metrics
+              trigger_prototypes:
+                - uuid: bb782e3c925b4b3082302747e4c775b2
+                  expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_status["{#DEST_NAME}"])<3'
+                  name: 'Golden Gate Process ''{#DEST_NAME}'' is not running.'
+                  opdata: 'Status: {ITEM.LASTVALUE1}'
+                  priority: HIGH
+            - uuid: 87ab56d9f1984c37a0b30ffeff76c28a
+              name: 'GG Process ''{#DEST_NAME}'': TSC'
+              type: DEPENDENT
+              key: 'oracle.gg.process_tsc["{#DEST_NAME}"]'
+              delay: '0'
+              history: 90d
+              units: s
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.DEST_NAME==''{#DEST_NAME}'')].TSC.first()'
+              master_item:
+                key: ogg.metrics
+              trigger_prototypes:
+                - uuid: c6ecff4818cb4b9b963adbe6c2293435
+                  expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_tsc["{#DEST_NAME}"])>{$ORACLE_GG_TSC_CRIT:"{#DEST_NAME}"}'
+                  recovery_mode: RECOVERY_EXPRESSION
+                  recovery_expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_tsc["{#DEST_NAME}"])<{$ORACLE_GG_TSC_CRIT:"{#DEST_NAME}"}'
+                  name: 'Golden Gate Process ''{#DEST_NAME}'' TSC is too high.'
+                  opdata: 'Lag: {ITEM.LASTVALUE1}, threshold {$ORACLE_GG_TSC_CRIT:"{#DEST_NAME}"}'
+                  priority: HIGH
+                  description: 'TSC ''{#DEST_NAME}'' is more then {$ORACLE_GG_TSC_CRIT:"{#DEST_NAME}"}.'
+                - uuid: 6a0d0d9dcf8f424ca2fdd73695e42c42
+                  expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_tsc["{#DEST_NAME}"])>{$ORACLE_GG_TSC_WARN:"{#DEST_NAME}"}'
+                  recovery_mode: RECOVERY_EXPRESSION
+                  recovery_expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_tsc["{#DEST_NAME}"])<{$ORACLE_GG_TSC_WARN:"{#DEST_NAME}"}'
+                  name: 'Golden Gate Process ''{#DEST_NAME}'' TSC is too high.'
+                  opdata: 'Lag: {ITEM.LASTVALUE1}, threshold {$ORACLE_GG_TSC_WARN:"{#DEST_NAME}"}'
+                  priority: WARNING
+                  description: 'Lag ''{#DEST_NAME}'' is more then {$ORACLE_GG_TSC_WARN:"{#DEST_NAME}"}.'
+                  dependencies:
+                    - name: 'Golden Gate Process ''{#DEST_NAME}'' TSC is too high.'
+                      expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_tsc["{#DEST_NAME}"])>{$ORACLE_GG_TSC_CRIT:"{#DEST_NAME}"}'
+                      recovery_expression: 'last(/Oracle MX GG v.0.2/oracle.gg.process_tsc["{#DEST_NAME}"])<{$ORACLE_GG_TSC_CRIT:"{#DEST_NAME}"}'
