@@ -1,0 +1,46 @@
+#!/bin/bash
+
+
+export GG_HOME=/u01/app/oracle/product/gg19c
+export LD_LIBRARY_PATH=/usr/lib:/u01/app/oracle/product/19.0.0/dbhome_1/lib
+
+GG_INFO_ROW=`${GG_HOME}/ggsci -S << EOF
+info all
+exit
+EOF`
+
+RESULT=""
+R=""
+while IFS= read -r line; do
+LTYPE=$(echo "$line" | awk -F' ' '{print $1}')
+
+case ${LTYPE} in
+"EXTRACT"|"REPLICAT")
+lstatus=`echo "${line}" |awk '{print $2}'| sed 's/STOPPED/0/; s/STARTING/1/; s/ABENDED/2/; s/RUNNING/3/'`
+lgroup=`echo "${line}" |awk '{print $3}'`
+llag=`echo "${line}" | awk '{print $4}'| awk 'BEGIN { FS=":" } {print $1*3600+$2*60+$3}'`
+ltsc=`echo "${line}" | awk '{print $5}'| awk 'BEGIN { FS=":" } {print $1*3600+$2*60+$3}'`
+RESULT="{\"DEST_NAME\":\"${LTYPE}.${lgroup}\",\"STATUS\":\"${lstatus}\",\"LAG\":\"${llag}\",\"TSC\":\"${ltsc}\"}"
+;;
+"MANAGER")
+lstatus=`echo "${line}" |awk '{print $2}'| sed 's/STOPPED/0/; s/STARTING/1/; s/ABENDED/2/; s/RUNNING/3/'`
+RESULT="{\"DEST_NAME\":\"MANAGER\",\"STATUS\":\"${lstatus}\"}"
+;;
+esac
+
+R="${R},${RESULT}"
+RESULT=""
+
+
+done <<< "$GG_INFO_ROW"
+
+
+#Replace all leading and trailing commas to []
+
+R=`echo ${R} | sed 's/^[^{]*/[/; s/,*$/]/'`
+/usr/bin/zabbix_sender -z <Zabbix Server Host> -p 10051 -s <Host Name in Zabbix> -k gg.data -o "${R}"
+
+#LLD
+lld='[{"{#DEST_NAME}":"MANAGER"},{"{#DEST_NAME}":"EXTRACT.EXT1"},{"{#DEST_NAME}":"EXTRACT.EXT2"},{"{#DEST_NAME}":"EXTRACT.EXT3"},{"{#DEST_NAME}":"REPLICAT.REP1"},{"{#DEST_NAME}":"REPLICAT.REP2"},{"{#DEST_NAME}":"REPLICAT.REP3"}]'
+
+/usr/bin/zabbix_sender -z <Zabbix Server Host> -p 10051 -s <Host Name in Zabbix> -k gg.process -o "${lld}"
