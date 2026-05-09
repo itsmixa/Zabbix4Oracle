@@ -1,7 +1,7 @@
 # Zabbix template for Oracle Database and Golden Gate
 
 
-These templates were created because standard Zabbix templates cannot correctly calculate space, contain many useless performance metrics, and do not allow monitoring important and database instance metrics.
+These templates were created because standard Zabbix templates cannot correctly calculate space, contain many useless performance metrics, and do not allow monitoring many important database and instance metrics.
 
 The Oracle Database template monitors:
 1. Space in tablespaces.
